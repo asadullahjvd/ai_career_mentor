@@ -1,11 +1,12 @@
+streamlit
 sentence-transformers
 faiss-cpu
 PyPDF2
 pandas
+numpy
 langchain
 langchain-groq
 groq
 requests
 Pillow
 kaggle
-numpy
