@@ -432,22 +432,11 @@ with st.sidebar:
     st.markdown("## ⚙️ Settings")
     location = st.text_input("📍 Job Search Location", value="Lahore, Pakistan")
     top_k    = st.slider("🎯 Career Recommendations", 3, 10, 5)
-    st.markdown("---")
-    st.markdown("""
-    <div style='text-align:center; padding: 1rem;
-         background: linear-gradient(135deg, #0d1117, #111827);
-         border: 1px solid #1e2a3a; border-radius: 12px;'>
-        <div style='font-size:1.5rem; margin-bottom:0.5rem;'>🔒</div>
-        <div style='color:#00d4ff; font-weight:600; font-size:0.9rem;'>Secured Platform</div>
-        <div style='color:#6b7280; font-size:0.78rem; margin-top:0.4rem; line-height:1.5;'>
-            API keys are managed securely.<br>No setup required.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    
     st.markdown("---")
     st.markdown("""
     <div style='text-align:center; color:#6b7280; font-size:0.82rem;'>
-        Built with ❤️ by<br>
+        Built by<br>
         <a href='https://asadullahjvd.github.io' style='color:#00d4ff; font-weight:600;'>
         Asadullah Javed</a>
     </div>
