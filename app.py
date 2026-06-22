@@ -165,7 +165,6 @@ def load_embedder():
 
 @st.cache_resource(show_spinner="Building career index...")
 def load_data_and_index():
-    # Download from Kaggle if missing
     download_dataset_from_kaggle()
 
     # Load job_descriptions.csv
@@ -214,7 +213,7 @@ def load_data_and_index():
 
     return combined, job_title_to_skills, unique_titles, job_skills_set, index
 
-# ── UI ────────────────────────────────────────────────────────────────────────
+# ── UI Layout ─────────────────────────────────────────────────────────────────
 st.markdown("<h1>🤖 AI Career Mentor</h1>", unsafe_allow_html=True)
 st.markdown("Upload your resume and get **personalized career recommendations**, skill gap analysis, a learning roadmap, and live job opportunities.")
 st.markdown("---")
@@ -239,7 +238,7 @@ Get it from: [kaggle.com](https://www.kaggle.com) → Account → API → Create
     st.markdown("---")
     st.markdown("**Built by** [Asadullah Javed](https://asadullahjvd.github.io)")
 
-# ── State Initialization ──────────────────────────────────────────────────────
+# ── Session State Initialization ──────────────────────────────────────────────
 if 'clicked_recommend' not in st.session_state:
     st.session_state.clicked_recommend = False
 if 'extracted_skills' not in st.session_state:
@@ -249,7 +248,7 @@ if 'extracted_skills_lower' not in st.session_state:
 if 'recommended_careers' not in st.session_state:
     st.session_state.recommended_careers = []
 
-# ── Main content ──────────────────────────────────────────────────────────────
+# ── Main Content Input Panels ─────────────────────────────────────────────────
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -262,7 +261,7 @@ with col2:
 
 st.markdown("---")
 
-# When button is clicked, process everything and save parameters to state variables
+# ── Processing Trigger Button ─────────────────────────────────────────────────
 if st.button("🚀 Get Career Recommendations", use_container_width=True):
     if not uploaded_file:
         st.error("Please upload your resume PDF.")
@@ -271,71 +270,106 @@ if st.button("🚀 Get Career Recommendations", use_container_width=True):
         st.error("Please enter your Groq API key in the sidebar.")
         st.stop()
 
-    st.session_state.clicked_recommend = True
-
-    with st.spinner("Loading career data..."):
-        combined, job_title_to_skills, unique_titles, job_skills_set, faiss_index = load_data_and_index()
-        embedder = load_embedder()
-
-    with st.spinner("Reading your resume..."):
-        resume_text = extract_text_from_pdf(io.BytesIO(uploaded_file.read()))
-        if not resume_text:
-            st.error("Could not extract text from PDF.")
+    try:
+        with st.spinner("Loading career database and building vector index..."):
+            combined, job_title_to_skills, unique_titles, job_skills_set, faiss_index = load_data_and_index()
+            embedder = load_embedder()
+            
+        if len(unique_titles) == 0:
+            st.error("The career dataset could not be compiled. Please verify your underlying CSV source files.")
             st.stop()
 
-    with st.spinner("Extracting skills from resume..."):
-        llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
-        prompt = f"""
+        with st.spinner("Reading your resume..."):
+            resume_text = extract_text_from_pdf(io.BytesIO(uploaded_file.read()))
+            if not resume_text or len(resume_text.strip()) == 0:
+                st.error("Could not pull content from your PDF. Is it a scanned graphic?")
+                st.stop()
+
+        with st.spinner("Extracting technical assets via Groq LLM..."):
+            llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
+            prompt = f"""
 You are a skill extraction system. Extract ALL technical and soft skills from the resume below.
-Return ONLY a valid JSON array of skill names. No explanation, no markdown, no preamble.
+Return ONLY a valid JSON array of skill names. No conversational text, no markdown block syntax, no introduction.
 Example: ["Python", "Machine Learning", "SQL", "Communication"]
 
 Resume:
 {resume_text}
 """
-        response = llm.invoke(prompt)
-        st.session_state.extracted_skills = extract_json_skills(response.content)
-        if not st.session_state.extracted_skills:
-            st.error("Could not extract skills from resume. Try again.")
-            st.stop()
-        st.session_state.extracted_skills_lower = [s.lower() for s in st.session_state.extracted_skills]
+            response = llm.invoke(prompt)
+            raw_content = response.content.strip()
+            
+            # Multi-tier breakdown mechanism for parsing LLM format variations
+            extracted = extract_json_skills(raw_content)
+            if not extracted and ("[" in raw_content and "]" in raw_content):
+                try:
+                    start_idx = raw_content.find('[')
+                    end_idx = raw_content.find(']') + 1
+                    extracted = json.loads(raw_content[start_idx:end_idx])
+                except:
+                    pass
+            
+            # Ultimate string breakdown fallback 
+            if not extracted:
+                cleaned_fallback = re.sub(r'[\[\]\"\'\‘\’\“\”]', '', raw_content)
+                extracted = [s.strip() for s in cleaned_fallback.split(',') if s.strip()]
 
-    with st.spinner("Finding best career matches..."):
-        combined_skills_str = ", ".join(st.session_state.extracted_skills_lower)
-        cv_embedding = embedder.encode(combined_skills_str, convert_to_tensor=False).astype('float32')
-        distances, indices = faiss_index.search(np.array([cv_embedding]), top_k)
+            if not extracted:
+                st.error("Skill extraction response returned unexpected styling. Please execute again.")
+                st.stop()
+                
+            st.session_state.extracted_skills = extracted
+            st.session_state.extracted_skills_lower = [s.lower() for s in extracted]
 
-    # Process career recommendations loop
-    recommended_careers = []
-    user_skills_set = set(st.session_state.extracted_skills_lower)
+        with st.spinner("Evaluating matching weights with FAISS..."):
+            combined_skills_str = ", ".join(st.session_state.extracted_skills_lower)
+            cv_embedding = embedder.encode(combined_skills_str, convert_to_tensor=False).astype('float32')
+            distances, indices = faiss_index.search(np.array([cv_embedding]), top_k)
 
-    for i in range(top_k):
-        idx = indices[0][i]
-        career_title = unique_titles[idx]
-        similarity = round(1 - (distances[0][i] / 2), 4)
+        # Build recommendation schemas
+        recommended_careers = []
+        user_skills_set = set(st.session_state.extracted_skills_lower)
 
-        skills_str = job_title_to_skills[job_title_to_skills['Job Title'] == career_title]['skills'].iloc[0]
-        required_skills = set(advanced_tokenize_skills(skills_str))
-        missing_skills = sorted(required_skills - user_skills_set)
+        for i in range(top_k):
+            if i >= len(indices[0]):
+                break
+            idx = indices[0][i]
+            if idx >= len(unique_titles):
+                continue
+                
+            career_title = unique_titles[idx]
+            similarity = round(1 - (distances[0][i] / 2), 4)
 
-        recommended_careers.append({
-            "title": career_title.title(),
-            "similarity": similarity,
-            "missing_skills": missing_skills
-        })
-    st.session_state.recommended_careers = recommended_careers
+            skills_match = job_title_to_skills[job_title_to_skills['Job Title'] == career_title]
+            if not skills_match.empty:
+                skills_str = skills_match['skills'].iloc[0]
+                required_skills = set(advanced_tokenize_skills(skills_str))
+                missing_skills = sorted(required_skills - user_skills_set)
+            else:
+                missing_skills = []
 
+            recommended_careers.append({
+                "title": career_title.title(),
+                "similarity": similarity,
+                "missing_skills": missing_skills
+            })
+            
+        st.session_state.recommended_careers = recommended_careers
+        st.session_state.clicked_recommend = True
+        
+    except Exception as general_err:
+        st.error(f"Execution Error encountered: {general_err}")
 
-# ── Render Outputs (Outside the button click block using session state values) ──
-if st.session_state.clicked_recommend:
+# ── UI Rendering Section (Saves display metrics across page context changes) ──
+if st.session_state.clicked_recommend and st.session_state.extracted_skills:
+    # Safely instantiates execution reference context for interactive UI steps
     llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
 
-    # Display skills
+    # Display Extracted Skill Tags
     st.markdown("<div class='section-header'><h3>🛠️ Skills Extracted from Your Resume</h3></div>", unsafe_allow_html=True)
     skills_html = "".join([f"<span class='skill-tag'>{s}</span>" for s in st.session_state.extracted_skills])
     st.markdown(skills_html, unsafe_allow_html=True)
 
-    # Display career recommendations
+    # Display Career Recommendations Expanders
     st.markdown("<div class='section-header'><h3>🎯 Recommended Career Paths</h3></div>", unsafe_allow_html=True)
     for i, career in enumerate(st.session_state.recommended_careers):
         with st.expander(f"{i+1}. {career['title']} — Match: {career['similarity']:.2%}"):
@@ -346,17 +380,20 @@ if st.session_state.clicked_recommend:
             else:
                 st.success("You have all major skills for this role!")
 
-    # ── Learning Roadmap Segment ─────────────────────────────────────────────
+    # ── Learning Roadmap Dynamic Rendering ────────────────────────────────────
     st.markdown("<div class='section-header'><h3>🗺️ Learning Roadmap</h3></div>", unsafe_allow_html=True)
     career_options = [c['title'] for c in st.session_state.recommended_careers]
-    selected_career = st.selectbox("Select a career path to get your roadmap:", career_options)
+    
+    if career_options:
+        selected_career = st.selectbox("Select a career path to get your roadmap:", career_options)
 
-    if selected_career:
-        selected_info = next(c for c in st.session_state.recommended_careers if c['title'] == selected_career)
-        missing = selected_info['missing_skills']
+        if selected_career:
+            selected_info = next((c for c in st.session_state.recommended_careers if c['title'] == selected_career), None)
+            if selected_info:
+                missing = selected_info['missing_skills']
 
-        with st.spinner("Generating your personalized roadmap..."):
-            roadmap_prompt = f"""
+                with st.spinner("Generating your personalized roadmap..."):
+                    roadmap_prompt = f"""
 You are an expert career advisor. The user wants to become a {selected_career}.
 
 Their current skills: {', '.join(st.session_state.extracted_skills_lower[:20])}
@@ -371,38 +408,41 @@ Generate a clear, structured learning roadmap with:
 
 Format as clean markdown.
 """
-            roadmap_response = llm.invoke(roadmap_prompt)
-            st.markdown(roadmap_response.content)
+                    try:
+                        roadmap_response = llm.invoke(roadmap_prompt)
+                        st.markdown(roadmap_response.content)
+                    except Exception as llm_err:
+                        st.error(f"Roadmap compilation failed: {llm_err}")
 
-        # ── Live Jobs Segment ─────────────────────────────────────────────────
-        st.markdown("<div class='section-header'><h3>💼 Live Job Opportunities</h3></div>", unsafe_allow_html=True)
+                # ── Live Job Aggregator ───────────────────────────────────────────
+                st.markdown("<div class='section-header'><h3>💼 Live Job Opportunities</h3></div>", unsafe_allow_html=True)
 
-        if rapidapi_key:
-            with st.spinner(f"Searching live jobs for {selected_career}..."):
-                jobs = get_live_jobs(selected_career, location, rapidapi_key)
+                if rapidapi_key:
+                    with st.spinner(f"Searching live jobs for {selected_career}..."):
+                        jobs = get_live_jobs(selected_career, location, rapidapi_key)
 
-            if jobs:
-                for job in jobs[:8]:
-                    title = job.get("job_title", "N/A")
-                    company = job.get("employer_name", "N/A")
-                    job_loc = job.get("job_city", location)
-                    link = job.get("job_apply_link", "#")
-                    employment_type = job.get("job_employment_type", "")
-                    st.markdown(f"""
-<div class='job-card'>
-    <strong>{title}</strong><br>
-    🏢 {company} &nbsp;|&nbsp; 📍 {job_loc} &nbsp;|&nbsp; 📌 {employment_type}<br>
-    <a href='{link}' target='_blank'>👉 Apply Now</a>
-</div>
-""", unsafe_allow_html=True)
-            else:
-                st.info("No live jobs found for this role in your location. Try a different location.")
-        else:
-            st.warning("Enter your RapidAPI key in the sidebar to see live job listings.")
+                    if jobs:
+                        for job in jobs[:8]:
+                            title = job.get("job_title", "N/A")
+                            company = job.get("employer_name", "N/A")
+                            job_loc = job.get("job_city", location)
+                            link = job.get("job_apply_link", "#")
+                            employment_type = job.get("job_employment_type", "")
+                            st.markdown(f"""
+        <div class='job-card'>
+            <strong>{title}</strong><br>
+            🏢 {company} &nbsp;|&nbsp; 📍 {job_loc} &nbsp;|&nbsp; 📌 {employment_type}<br>
+            <a href='{link}' target='_blank'>👉 Apply Now</a>
+        </div>
+        """, unsafe_allow_html=True)
+                    else:
+                        st.info("No live jobs found for this specific target criteria. Try expanding search region parameter.")
+                else:
+                    st.warning("Enter your RapidAPI key in the sidebar to see live job listings.")
 
-        # ── LLM Job Guidance Segment ─────────────────────────────────────────
-        with st.spinner("Generating job search guidance..."):
-            guidance_prompt = f"""
+                # ── Market Guidance Advisor ───────────────────────────────────────
+                with st.spinner("Compiling tactical market positioning guidance..."):
+                    guidance_prompt = f"""
 You are a job search advisor. The user is a fresh CS graduate targeting: {selected_career} in {location}.
 
 Provide actionable job search guidance in clean markdown:
@@ -413,6 +453,11 @@ Provide actionable job search guidance in clean markdown:
 
 Keep it concise and practical.
 """
-            guidance_response = llm.invoke(guidance_prompt)
-            st.markdown("#### 🔍 Job Search Guidance")
-            st.markdown(guidance_response.content)
+                    try:
+                        guidance_response = llm.invoke(guidance_prompt)
+                        st.markdown("#### 🔍 Job Search Guidance")
+                        st.markdown(guidance_response.content)
+                    except Exception as llm_err:
+                        st.error(f"Market guidance engine runtime failed: {llm_err}")
+    else:
+        st.warning("Empty matching array pool. Cannot map progression path workflows.")
