@@ -10,3 +10,4 @@ groq
 requests
 Pillow
 kaggle
+torchvision
