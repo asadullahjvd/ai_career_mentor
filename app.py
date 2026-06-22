@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -134,6 +135,29 @@ def get_live_jobs(job_title, location, api_key):
         st.warning(f"Job search error: {e}")
         return []
 
+def download_dataset_from_kaggle():
+    """Download job_descriptions.csv from Kaggle if not present locally."""
+    if os.path.exists('job_descriptions.csv'):
+        return True
+    try:
+        import kaggle
+        kaggle.api.authenticate()
+        with st.spinner("📥 Downloading job descriptions dataset from Kaggle (one-time, ~1.6GB)..."):
+            kaggle.api.dataset_download_files(
+                'bcsf24m006asadullah/job-desciptions',
+                path='.',
+                unzip=True
+            )
+        if os.path.exists('job_descriptions.csv'):
+            st.success("✅ Dataset downloaded successfully!")
+            return True
+        else:
+            st.warning("⚠️ Download completed but file not found. Proceeding without it.")
+            return False
+    except Exception as e:
+        st.warning(f"⚠️ Could not download from Kaggle: {e}. Proceeding with job_dataset.csv only.")
+        return False
+
 # ── Cached loaders ────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Loading AI model...")
 def load_embedder():
@@ -141,13 +165,19 @@ def load_embedder():
 
 @st.cache_resource(show_spinner="Building career index...")
 def load_data_and_index():
+
+    # ── Download from Kaggle if missing ──────────────────────────────────────
+    download_dataset_from_kaggle()
+
+    # ── Load job_descriptions.csv ─────────────────────────────────────────────
     try:
         df1 = pd.read_csv('job_descriptions.csv', engine='python', on_bad_lines='skip')
         job_skills_df = df1[['Job Title', 'skills']].dropna().copy()
     except Exception as e:
-        st.error(f"Could not load job_descriptions.csv: {e}")
+        st.warning(f"Could not load job_descriptions.csv: {e}")
         job_skills_df = pd.DataFrame(columns=['Job Title', 'skills'])
 
+    # ── Load job_dataset.csv ──────────────────────────────────────────────────
     try:
         df2 = pd.read_csv('job_dataset.csv', engine='python', on_bad_lines='skip')
         df2_selected = df2[['Title', 'Keywords']].copy()
@@ -158,13 +188,13 @@ def load_data_and_index():
 
     combined = pd.concat([job_skills_df, df2_selected], ignore_index=True).dropna()
 
-    # Preprocess
+    # ── Preprocess ────────────────────────────────────────────────────────────
     for col in ['Job Title', 'skills']:
         combined[col] = combined[col].apply(to_lowercase)
         combined[col] = combined[col].apply(remove_punctuation)
         combined[col] = combined[col].apply(remove_brackets)
 
-    # Aggregate skills by job title
+    # ── Aggregate skills by job title ─────────────────────────────────────────
     job_title_to_skills = (
         combined.groupby('Job Title')['skills']
         .apply(lambda x: ' '.join(x.dropna().unique()))
@@ -173,11 +203,11 @@ def load_data_and_index():
     unique_titles = job_title_to_skills['Job Title'].tolist()
     combined_skills = job_title_to_skills['skills'].tolist()
 
-    # Build job skills set for missing skill logic
+    # ── Build job skills set ──────────────────────────────────────────────────
     all_skills = [s for sublist in combined['skills'].apply(advanced_tokenize_skills) for s in sublist]
     job_skills_set = set(all_skills)
 
-    # Build FAISS index
+    # ── Build FAISS index ─────────────────────────────────────────────────────
     embedder = load_embedder()
     embeddings = embedder.encode(combined_skills, convert_to_tensor=False).astype('float32')
     index = faiss.IndexFlatL2(embeddings.shape[1])
@@ -190,17 +220,27 @@ st.markdown("<h1>🤖 AI Career Mentor</h1>", unsafe_allow_html=True)
 st.markdown("Upload your resume and get **personalized career recommendations**, skill gap analysis, a learning roadmap, and live job opportunities.")
 st.markdown("---")
 
-# Sidebar
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Configuration")
     groq_api_key = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
     rapidapi_key = st.text_input("RapidAPI Key (JSearch)", type="password", placeholder="your_key...")
     location = st.text_input("Job Search Location", value="Lahore, Pakistan")
     top_k = st.slider("Number of Career Recommendations", 3, 10, 5)
+
+    st.markdown("---")
+    st.markdown("### 📦 Kaggle Dataset Setup")
+    st.markdown("""
+To auto-download the dataset, place your `kaggle.json` in:
+- **Linux/Mac:** `~/.kaggle/kaggle.json`
+- **Windows:** `C:/Users/<username>/.kaggle/kaggle.json`
+
+Get it from: [kaggle.com](https://www.kaggle.com) → Account → API → Create Token
+""")
     st.markdown("---")
     st.markdown("**Built by** [Asadullah Javed](https://asadullahjvd.github.io)")
 
-# Main content
+# ── Main content ──────────────────────────────────────────────────────────────
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -215,7 +255,7 @@ st.markdown("---")
 
 if st.button("🚀 Get Career Recommendations", use_container_width=True):
 
-    # Validation
+    # ── Validation ────────────────────────────────────────────────────────────
     if not uploaded_file:
         st.error("Please upload your resume PDF.")
         st.stop()
@@ -275,7 +315,6 @@ Resume:
         career_title = unique_titles[idx]
         similarity = round(1 - (distances[0][i] / 2), 4)
 
-        # Get missing skills
         skills_str = job_title_to_skills[job_title_to_skills['Job Title'] == career_title]['skills'].iloc[0]
         required_skills = set(advanced_tokenize_skills(skills_str))
         missing_skills = sorted(required_skills - user_skills_set)
