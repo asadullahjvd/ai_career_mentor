@@ -572,7 +572,7 @@ if st.session_state.clicked_recommend and st.session_state.extracted_skills:
 
     st.markdown("<div class='section-header'><h3>🎯 Recommended Career Paths</h3></div>", unsafe_allow_html=True)
     for i, career in enumerate(st.session_state.recommended_careers):
-        with st.expander(f"{i+1}. {career['title']} — Match: {career['similarity']:.2%}"):
+        with st.expander(f"{i+1}. {career['title']} "):
             if career['missing_skills']:
                 st.markdown("**❌ Skills to develop:**")
                 st.markdown(
