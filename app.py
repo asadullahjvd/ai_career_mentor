@@ -71,6 +71,16 @@ MULTI_WORD_SKILLS = [
     "object oriented programming", "oop", "data structures and algorithms", "dsa"
 ]
 
+# ── Load secrets safely ───────────────────────────────────────────────────────
+def get_secret(key, default=""):
+    try:
+        return st.secrets.get(key, default)
+    except:
+        return default
+
+DEFAULT_GROQ_KEY    = get_secret("GROQ_API_KEY")
+DEFAULT_RAPIDAPI_KEY = get_secret("RAPIDAPI_KEY")
+
 # ── Helper functions ──────────────────────────────────────────────────────────
 def to_lowercase(text): return text.lower()
 def remove_punctuation(text): return text.translate(str.maketrans('', '', string.punctuation))
@@ -136,17 +146,26 @@ def get_live_jobs(job_title, location, api_key):
         return []
 
 def download_dataset_from_kaggle():
-    """Download job_descriptions.csv from Kaggle if not present locally."""
     if os.path.exists('job_descriptions.csv'):
         return True
     try:
+        # Write kaggle.json from Streamlit secrets
+        kaggle_dir = os.path.expanduser('~/.kaggle')
+        os.makedirs(kaggle_dir, exist_ok=True)
+        kaggle_creds = {
+            "username": st.secrets["kaggle"]["username"],
+            "key": st.secrets["kaggle"]["key"]
+        }
+        with open(os.path.join(kaggle_dir, 'kaggle.json'), 'w') as f:
+            json.dump(kaggle_creds, f)
+        os.chmod(os.path.join(kaggle_dir, 'kaggle.json'), 0o600)
+
         import kaggle
         kaggle.api.authenticate()
         with st.spinner("📥 Downloading job descriptions dataset from Kaggle (one-time, ~1.6GB)..."):
             kaggle.api.dataset_download_files(
                 'bcsf24m006asadullah/job-desciptions',
-                path='.',
-                unzip=True
+                path='.', unzip=True
             )
         if os.path.exists('job_descriptions.csv'):
             st.success("✅ Dataset downloaded successfully!")
@@ -167,7 +186,6 @@ def load_embedder():
 def load_data_and_index():
     download_dataset_from_kaggle()
 
-    # Load job_descriptions.csv
     try:
         df1 = pd.read_csv('job_descriptions.csv', engine='python', on_bad_lines='skip')
         job_skills_df = df1[['Job Title', 'skills']].dropna().copy()
@@ -175,7 +193,6 @@ def load_data_and_index():
         st.warning(f"Could not load job_descriptions.csv: {e}")
         job_skills_df = pd.DataFrame(columns=['Job Title', 'skills'])
 
-    # Load job_dataset.csv
     try:
         df2 = pd.read_csv('job_dataset.csv', engine='python', on_bad_lines='skip')
         df2_selected = df2[['Title', 'Keywords']].copy()
@@ -186,13 +203,11 @@ def load_data_and_index():
 
     combined = pd.concat([job_skills_df, df2_selected], ignore_index=True).dropna()
 
-    # Preprocess
     for col in ['Job Title', 'skills']:
         combined[col] = combined[col].apply(to_lowercase)
         combined[col] = combined[col].apply(remove_punctuation)
         combined[col] = combined[col].apply(remove_brackets)
 
-    # Aggregate skills by job title
     job_title_to_skills = (
         combined.groupby('Job Title')['skills']
         .apply(lambda x: ' '.join(x.dropna().unique()))
@@ -201,11 +216,9 @@ def load_data_and_index():
     unique_titles = job_title_to_skills['Job Title'].tolist()
     combined_skills = job_title_to_skills['skills'].tolist()
 
-    # Build job skills set
     all_skills = [s for sublist in combined['skills'].apply(advanced_tokenize_skills) for s in sublist]
     job_skills_set = set(all_skills)
 
-    # Build FAISS index
     embedder = load_embedder()
     embeddings = embedder.encode(combined_skills, convert_to_tensor=False).astype('float32')
     index = faiss.IndexFlatL2(embeddings.shape[1])
@@ -221,24 +234,27 @@ st.markdown("---")
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Configuration")
-    groq_api_key = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
-    rapidapi_key = st.text_input("RapidAPI Key (JSearch)", type="password", placeholder="your_key...")
+
+    # Pre-filled from secrets — user can override if needed
+    groq_api_key = st.text_input(
+        "Groq API Key",
+        type="password",
+        value=DEFAULT_GROQ_KEY,
+        placeholder="gsk_... (pre-filled)" if DEFAULT_GROQ_KEY else "gsk_..."
+    )
+    rapidapi_key = st.text_input(
+        "RapidAPI Key (JSearch)",
+        type="password",
+        value=DEFAULT_RAPIDAPI_KEY,
+        placeholder="pre-filled" if DEFAULT_RAPIDAPI_KEY else "your_key..."
+    )
+
     location = st.text_input("Job Search Location", value="Lahore, Pakistan")
     top_k = st.slider("Number of Career Recommendations", 3, 10, 5)
-
-    st.markdown("---")
-    st.markdown("### 📦 Kaggle Dataset Setup")
-    st.markdown("""
-To auto-download the dataset, place your `kaggle.json` in:
-- **Linux/Mac:** `~/.kaggle/kaggle.json`
-- **Windows:** `C:/Users/<username>/.kaggle/kaggle.json`
-
-Get it from: [kaggle.com](https://www.kaggle.com) → Account → API → Create Token
-""")
     st.markdown("---")
     st.markdown("**Built by** [Asadullah Javed](https://asadullahjvd.github.io)")
 
-# ── Session State Initialization ──────────────────────────────────────────────
+# ── Session State ─────────────────────────────────────────────────────────────
 if 'clicked_recommend' not in st.session_state:
     st.session_state.clicked_recommend = False
 if 'extracted_skills' not in st.session_state:
@@ -248,7 +264,7 @@ if 'extracted_skills_lower' not in st.session_state:
 if 'recommended_careers' not in st.session_state:
     st.session_state.recommended_careers = []
 
-# ── Main Content Input Panels ─────────────────────────────────────────────────
+# ── Main Content ──────────────────────────────────────────────────────────────
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -261,20 +277,20 @@ with col2:
 
 st.markdown("---")
 
-# ── Processing Trigger Button ─────────────────────────────────────────────────
+# ── Button ────────────────────────────────────────────────────────────────────
 if st.button("🚀 Get Career Recommendations", use_container_width=True):
     if not uploaded_file:
         st.error("Please upload your resume PDF.")
         st.stop()
     if not groq_api_key:
-        st.error("Please enter your Groq API key in the sidebar.")
+        st.error("Groq API key is missing. Please add it in the sidebar or Streamlit secrets.")
         st.stop()
 
     try:
         with st.spinner("Loading career database and building vector index..."):
             combined, job_title_to_skills, unique_titles, job_skills_set, faiss_index = load_data_and_index()
             embedder = load_embedder()
-            
+
         if len(unique_titles) == 0:
             st.error("The career dataset could not be compiled. Please verify your underlying CSV source files.")
             st.stop()
@@ -285,7 +301,7 @@ if st.button("🚀 Get Career Recommendations", use_container_width=True):
                 st.error("Could not pull content from your PDF. Is it a scanned graphic?")
                 st.stop()
 
-        with st.spinner("Extracting technical assets via Groq LLM..."):
+        with st.spinner("Extracting skills via Groq LLM..."):
             llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
             prompt = f"""
 You are a skill extraction system. Extract ALL technical and soft skills from the resume below.
@@ -297,8 +313,7 @@ Resume:
 """
             response = llm.invoke(prompt)
             raw_content = response.content.strip()
-            
-            # Multi-tier breakdown mechanism for parsing LLM format variations
+
             extracted = extract_json_skills(raw_content)
             if not extracted and ("[" in raw_content and "]" in raw_content):
                 try:
@@ -307,25 +322,23 @@ Resume:
                     extracted = json.loads(raw_content[start_idx:end_idx])
                 except:
                     pass
-            
-            # Ultimate string breakdown fallback 
+
             if not extracted:
-                cleaned_fallback = re.sub(r'[\[\]\"\'\‘\’\“\”]', '', raw_content)
+                cleaned_fallback = re.sub(r'[\[\]\"\'\'\'\"\"]', '', raw_content)
                 extracted = [s.strip() for s in cleaned_fallback.split(',') if s.strip()]
 
             if not extracted:
-                st.error("Skill extraction response returned unexpected styling. Please execute again.")
+                st.error("Skill extraction failed. Please try again.")
                 st.stop()
-                
+
             st.session_state.extracted_skills = extracted
             st.session_state.extracted_skills_lower = [s.lower() for s in extracted]
 
-        with st.spinner("Evaluating matching weights with FAISS..."):
+        with st.spinner("Finding best career matches with FAISS..."):
             combined_skills_str = ", ".join(st.session_state.extracted_skills_lower)
             cv_embedding = embedder.encode(combined_skills_str, convert_to_tensor=False).astype('float32')
             distances, indices = faiss_index.search(np.array([cv_embedding]), top_k)
 
-        # Build recommendation schemas
         recommended_careers = []
         user_skills_set = set(st.session_state.extracted_skills_lower)
 
@@ -335,7 +348,7 @@ Resume:
             idx = indices[0][i]
             if idx >= len(unique_titles):
                 continue
-                
+
             career_title = unique_titles[idx]
             similarity = round(1 - (distances[0][i] / 2), 4)
 
@@ -352,24 +365,21 @@ Resume:
                 "similarity": similarity,
                 "missing_skills": missing_skills
             })
-            
+
         st.session_state.recommended_careers = recommended_careers
         st.session_state.clicked_recommend = True
-        
-    except Exception as general_err:
-        st.error(f"Execution Error encountered: {general_err}")
 
-# ── UI Rendering Section (Saves display metrics across page context changes) ──
+    except Exception as general_err:
+        st.error(f"Execution Error: {general_err}")
+
+# ── Results ───────────────────────────────────────────────────────────────────
 if st.session_state.clicked_recommend and st.session_state.extracted_skills:
-    # Safely instantiates execution reference context for interactive UI steps
     llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
 
-    # Display Extracted Skill Tags
     st.markdown("<div class='section-header'><h3>🛠️ Skills Extracted from Your Resume</h3></div>", unsafe_allow_html=True)
     skills_html = "".join([f"<span class='skill-tag'>{s}</span>" for s in st.session_state.extracted_skills])
     st.markdown(skills_html, unsafe_allow_html=True)
 
-    # Display Career Recommendations Expanders
     st.markdown("<div class='section-header'><h3>🎯 Recommended Career Paths</h3></div>", unsafe_allow_html=True)
     for i, career in enumerate(st.session_state.recommended_careers):
         with st.expander(f"{i+1}. {career['title']} — Match: {career['similarity']:.2%}"):
@@ -380,10 +390,9 @@ if st.session_state.clicked_recommend and st.session_state.extracted_skills:
             else:
                 st.success("You have all major skills for this role!")
 
-    # ── Learning Roadmap Dynamic Rendering ────────────────────────────────────
     st.markdown("<div class='section-header'><h3>🗺️ Learning Roadmap</h3></div>", unsafe_allow_html=True)
     career_options = [c['title'] for c in st.session_state.recommended_careers]
-    
+
     if career_options:
         selected_career = st.selectbox("Select a career path to get your roadmap:", career_options)
 
@@ -411,10 +420,9 @@ Format as clean markdown.
                     try:
                         roadmap_response = llm.invoke(roadmap_prompt)
                         st.markdown(roadmap_response.content)
-                    except Exception as llm_err:
-                        st.error(f"Roadmap compilation failed: {llm_err}")
+                    except Exception as e:
+                        st.error(f"Roadmap generation failed: {e}")
 
-                # ── Live Job Aggregator ───────────────────────────────────────────
                 st.markdown("<div class='section-header'><h3>💼 Live Job Opportunities</h3></div>", unsafe_allow_html=True)
 
                 if rapidapi_key:
@@ -429,19 +437,18 @@ Format as clean markdown.
                             link = job.get("job_apply_link", "#")
                             employment_type = job.get("job_employment_type", "")
                             st.markdown(f"""
-        <div class='job-card'>
-            <strong>{title}</strong><br>
-            🏢 {company} &nbsp;|&nbsp; 📍 {job_loc} &nbsp;|&nbsp; 📌 {employment_type}<br>
-            <a href='{link}' target='_blank'>👉 Apply Now</a>
-        </div>
-        """, unsafe_allow_html=True)
+<div class='job-card'>
+    <strong>{title}</strong><br>
+    🏢 {company} &nbsp;|&nbsp; 📍 {job_loc} &nbsp;|&nbsp; 📌 {employment_type}<br>
+    <a href='{link}' target='_blank'>👉 Apply Now</a>
+</div>
+""", unsafe_allow_html=True)
                     else:
-                        st.info("No live jobs found for this specific target criteria. Try expanding search region parameter.")
+                        st.info("No live jobs found. Try a different location.")
                 else:
-                    st.warning("Enter your RapidAPI key in the sidebar to see live job listings.")
+                    st.warning("RapidAPI key missing. Add it in sidebar or Streamlit secrets to see live jobs.")
 
-                # ── Market Guidance Advisor ───────────────────────────────────────
-                with st.spinner("Compiling tactical market positioning guidance..."):
+                with st.spinner("Generating job search guidance..."):
                     guidance_prompt = f"""
 You are a job search advisor. The user is a fresh CS graduate targeting: {selected_career} in {location}.
 
@@ -457,7 +464,5 @@ Keep it concise and practical.
                         guidance_response = llm.invoke(guidance_prompt)
                         st.markdown("#### 🔍 Job Search Guidance")
                         st.markdown(guidance_response.content)
-                    except Exception as llm_err:
-                        st.error(f"Market guidance engine runtime failed: {llm_err}")
-    else:
-        st.warning("Empty matching array pool. Cannot map progression path workflows.")
+                    except Exception as e:
+                        st.error(f"Guidance generation failed: {e}")
