@@ -1,0 +1,10 @@
+sentence-transformers==2.2.2
+faiss-cpu
+PyPDF2
+pandas
+langchain
+langchain-groq
+groq
+requests
+Pillow==9.5.0
+numpy
