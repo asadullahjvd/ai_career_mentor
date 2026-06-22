@@ -165,11 +165,10 @@ def load_embedder():
 
 @st.cache_resource(show_spinner="Building career index...")
 def load_data_and_index():
-
-    # ── Download from Kaggle if missing ──────────────────────────────────────
+    # Download from Kaggle if missing
     download_dataset_from_kaggle()
 
-    # ── Load job_descriptions.csv ─────────────────────────────────────────────
+    # Load job_descriptions.csv
     try:
         df1 = pd.read_csv('job_descriptions.csv', engine='python', on_bad_lines='skip')
         job_skills_df = df1[['Job Title', 'skills']].dropna().copy()
@@ -177,7 +176,7 @@ def load_data_and_index():
         st.warning(f"Could not load job_descriptions.csv: {e}")
         job_skills_df = pd.DataFrame(columns=['Job Title', 'skills'])
 
-    # ── Load job_dataset.csv ──────────────────────────────────────────────────
+    # Load job_dataset.csv
     try:
         df2 = pd.read_csv('job_dataset.csv', engine='python', on_bad_lines='skip')
         df2_selected = df2[['Title', 'Keywords']].copy()
@@ -188,13 +187,13 @@ def load_data_and_index():
 
     combined = pd.concat([job_skills_df, df2_selected], ignore_index=True).dropna()
 
-    # ── Preprocess ────────────────────────────────────────────────────────────
+    # Preprocess
     for col in ['Job Title', 'skills']:
         combined[col] = combined[col].apply(to_lowercase)
         combined[col] = combined[col].apply(remove_punctuation)
         combined[col] = combined[col].apply(remove_brackets)
 
-    # ── Aggregate skills by job title ─────────────────────────────────────────
+    # Aggregate skills by job title
     job_title_to_skills = (
         combined.groupby('Job Title')['skills']
         .apply(lambda x: ' '.join(x.dropna().unique()))
@@ -203,11 +202,11 @@ def load_data_and_index():
     unique_titles = job_title_to_skills['Job Title'].tolist()
     combined_skills = job_title_to_skills['skills'].tolist()
 
-    # ── Build job skills set ──────────────────────────────────────────────────
+    # Build job skills set
     all_skills = [s for sublist in combined['skills'].apply(advanced_tokenize_skills) for s in sublist]
     job_skills_set = set(all_skills)
 
-    # ── Build FAISS index ─────────────────────────────────────────────────────
+    # Build FAISS index
     embedder = load_embedder()
     embeddings = embedder.encode(combined_skills, convert_to_tensor=False).astype('float32')
     index = faiss.IndexFlatL2(embeddings.shape[1])
@@ -240,6 +239,16 @@ Get it from: [kaggle.com](https://www.kaggle.com) → Account → API → Create
     st.markdown("---")
     st.markdown("**Built by** [Asadullah Javed](https://asadullahjvd.github.io)")
 
+# ── State Initialization ──────────────────────────────────────────────────────
+if 'clicked_recommend' not in st.session_state:
+    st.session_state.clicked_recommend = False
+if 'extracted_skills' not in st.session_state:
+    st.session_state.extracted_skills = []
+if 'extracted_skills_lower' not in st.session_state:
+    st.session_state.extracted_skills_lower = []
+if 'recommended_careers' not in st.session_state:
+    st.session_state.recommended_careers = []
+
 # ── Main content ──────────────────────────────────────────────────────────────
 col1, col2 = st.columns([1, 1])
 
@@ -253,9 +262,8 @@ with col2:
 
 st.markdown("---")
 
+# When button is clicked, process everything and save parameters to state variables
 if st.button("🚀 Get Career Recommendations", use_container_width=True):
-
-    # ── Validation ────────────────────────────────────────────────────────────
     if not uploaded_file:
         st.error("Please upload your resume PDF.")
         st.stop()
@@ -263,19 +271,18 @@ if st.button("🚀 Get Career Recommendations", use_container_width=True):
         st.error("Please enter your Groq API key in the sidebar.")
         st.stop()
 
-    # ── Step 1: Load data & model ─────────────────────────────────────────────
+    st.session_state.clicked_recommend = True
+
     with st.spinner("Loading career data..."):
         combined, job_title_to_skills, unique_titles, job_skills_set, faiss_index = load_data_and_index()
         embedder = load_embedder()
 
-    # ── Step 2: Extract resume text ───────────────────────────────────────────
     with st.spinner("Reading your resume..."):
         resume_text = extract_text_from_pdf(io.BytesIO(uploaded_file.read()))
         if not resume_text:
             st.error("Could not extract text from PDF.")
             st.stop()
 
-    # ── Step 3: Extract skills via LLM ───────────────────────────────────────
     with st.spinner("Extracting skills from resume..."):
         llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
         prompt = f"""
@@ -287,28 +294,20 @@ Resume:
 {resume_text}
 """
         response = llm.invoke(prompt)
-        extracted_skills = extract_json_skills(response.content)
-        if not extracted_skills:
+        st.session_state.extracted_skills = extract_json_skills(response.content)
+        if not st.session_state.extracted_skills:
             st.error("Could not extract skills from resume. Try again.")
             st.stop()
-        extracted_skills_lower = [s.lower() for s in extracted_skills]
+        st.session_state.extracted_skills_lower = [s.lower() for s in st.session_state.extracted_skills]
 
-    # ── Display extracted skills ──────────────────────────────────────────────
-    st.markdown("<div class='section-header'><h3>🛠️ Skills Extracted from Your Resume</h3></div>", unsafe_allow_html=True)
-    skills_html = "".join([f"<span class='skill-tag'>{s}</span>" for s in extracted_skills])
-    st.markdown(skills_html, unsafe_allow_html=True)
-
-    # ── Step 4: FAISS recommendation ─────────────────────────────────────────
     with st.spinner("Finding best career matches..."):
-        combined_skills_str = ", ".join(extracted_skills_lower)
+        combined_skills_str = ", ".join(st.session_state.extracted_skills_lower)
         cv_embedding = embedder.encode(combined_skills_str, convert_to_tensor=False).astype('float32')
         distances, indices = faiss_index.search(np.array([cv_embedding]), top_k)
 
-    # ── Display career recommendations ───────────────────────────────────────
-    st.markdown("<div class='section-header'><h3>🎯 Recommended Career Paths</h3></div>", unsafe_allow_html=True)
-
+    # Process career recommendations loop
     recommended_careers = []
-    user_skills_set = set(extracted_skills_lower)
+    user_skills_set = set(st.session_state.extracted_skills_lower)
 
     for i in range(top_k):
         idx = indices[0][i]
@@ -324,30 +323,43 @@ Resume:
             "similarity": similarity,
             "missing_skills": missing_skills
         })
+    st.session_state.recommended_careers = recommended_careers
 
-        with st.expander(f"{i+1}. {career_title.title()} — Match: {similarity:.2%}"):
-            if missing_skills:
+
+# ── Render Outputs (Outside the button click block using session state values) ──
+if st.session_state.clicked_recommend:
+    llm = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
+
+    # Display skills
+    st.markdown("<div class='section-header'><h3>🛠️ Skills Extracted from Your Resume</h3></div>", unsafe_allow_html=True)
+    skills_html = "".join([f"<span class='skill-tag'>{s}</span>" for s in st.session_state.extracted_skills])
+    st.markdown(skills_html, unsafe_allow_html=True)
+
+    # Display career recommendations
+    st.markdown("<div class='section-header'><h3>🎯 Recommended Career Paths</h3></div>", unsafe_allow_html=True)
+    for i, career in enumerate(st.session_state.recommended_careers):
+        with st.expander(f"{i+1}. {career['title']} — Match: {career['similarity']:.2%}"):
+            if career['missing_skills']:
                 st.markdown("**❌ Skills you need to develop:**")
-                missing_html = "".join([f"<span class='missing-tag'>{s}</span>" for s in missing_skills[:15]])
+                missing_html = "".join([f"<span class='missing-tag'>{s}</span>" for s in career['missing_skills'][:15]])
                 st.markdown(missing_html, unsafe_allow_html=True)
             else:
                 st.success("You have all major skills for this role!")
 
-    # ── Step 5: User selects career ───────────────────────────────────────────
+    # ── Learning Roadmap Segment ─────────────────────────────────────────────
     st.markdown("<div class='section-header'><h3>🗺️ Learning Roadmap</h3></div>", unsafe_allow_html=True)
-    career_options = [c['title'] for c in recommended_careers]
+    career_options = [c['title'] for c in st.session_state.recommended_careers]
     selected_career = st.selectbox("Select a career path to get your roadmap:", career_options)
 
     if selected_career:
-        selected_info = next(c for c in recommended_careers if c['title'] == selected_career)
+        selected_info = next(c for c in st.session_state.recommended_careers if c['title'] == selected_career)
         missing = selected_info['missing_skills']
 
-        # ── Step 6: LLM Roadmap ───────────────────────────────────────────────
         with st.spinner("Generating your personalized roadmap..."):
             roadmap_prompt = f"""
 You are an expert career advisor. The user wants to become a {selected_career}.
 
-Their current skills: {', '.join(extracted_skills_lower[:20])}
+Their current skills: {', '.join(st.session_state.extracted_skills_lower[:20])}
 Their interests: {user_interests}
 Missing skills for this role: {', '.join(missing[:15]) if missing else 'None — they are well prepared!'}
 
@@ -362,7 +374,7 @@ Format as clean markdown.
             roadmap_response = llm.invoke(roadmap_prompt)
             st.markdown(roadmap_response.content)
 
-        # ── Step 7: Live Jobs ─────────────────────────────────────────────────
+        # ── Live Jobs Segment ─────────────────────────────────────────────────
         st.markdown("<div class='section-header'><h3>💼 Live Job Opportunities</h3></div>", unsafe_allow_html=True)
 
         if rapidapi_key:
@@ -388,7 +400,7 @@ Format as clean markdown.
         else:
             st.warning("Enter your RapidAPI key in the sidebar to see live job listings.")
 
-        # ── Step 8: LLM Job Search Guidance ──────────────────────────────────
+        # ── LLM Job Guidance Segment ─────────────────────────────────────────
         with st.spinner("Generating job search guidance..."):
             guidance_prompt = f"""
 You are a job search advisor. The user is a fresh CS graduate targeting: {selected_career} in {location}.
