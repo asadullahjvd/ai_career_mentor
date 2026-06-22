@@ -191,15 +191,6 @@ h2, h3 { color: #e0e0e0; }
     line-height: 1.6;
 }
 
-.badge {
-    display: inline-block;
-    background: linear-gradient(135deg, #0d2137, #0a1628);
-    color: #00d4ff; border: 1px solid #1e3a5f;
-    border-radius: 20px; padding: 4px 14px;
-    font-size: 0.78rem; font-weight: 600;
-    margin: 4px; letter-spacing: 0.5px;
-}
-
 .orb {
     position: absolute; border-radius: 50%;
     filter: blur(60px); opacity: 0.15; animation: orbFloat 8s ease-in-out infinite;
@@ -239,10 +230,6 @@ h2, h3 { color: #e0e0e0; }
 @keyframes orbFloat {
     0%, 100% { transform: translateY(0px); }
     50%       { transform: translateY(-20px); }
-}
-@keyframes shineSwipe {
-    0%   { transform: translateX(-100%) rotate(45deg); }
-    100% { transform: translateX(100%) rotate(45deg); }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -403,11 +390,6 @@ st.markdown("""
         Upload your resume · Discover your ideal career path<br>
         Get a personalized roadmap · Find live job opportunities
     </p>
-    <br>
-    <span class="badge">⚡ Groq LLM</span>
-    <span class="badge">🔍 FAISS Semantic Search</span>
-    <span class="badge">📊 1.6M+ Job Descriptions</span>
-    <span class="badge">🌐 Live Job Search</span>
 </div>
 """, unsafe_allow_html=True)
 
